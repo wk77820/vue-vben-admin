@@ -1,9 +1,9 @@
 import type { RouteLocationNormalized, RouteRecordNormalized } from 'vue-router';
-import type { App, Plugin } from 'vue';
+import type { App, Component } from 'vue';
 
+import { intersectionWith, isEqual, mergeWith, unionWith } from 'lodash-es';
 import { unref } from 'vue';
-import { isObject } from '/@/utils/is';
-import { cloneDeep } from 'lodash-es';
+import { isArray, isObject } from '/@/utils/is';
 
 export const noop = () => {};
 
@@ -33,14 +33,52 @@ export function setObjToUrlParams(baseUrl: string, obj: any): string {
   return /\?$/.test(baseUrl) ? baseUrl + parameters : baseUrl.replace(/\/?$/, '?') + parameters;
 }
 
-// 深度合并
-export function deepMerge<T = any>(src: any = {}, target: any = {}): T {
-  let key: string;
-  const res: any = cloneDeep(src)
-  for (key in target) {
-    res[key] = isObject(res[key]) ? deepMerge(res[key], target[key]) : (res[key] = target[key]);
+/**
+ * Recursively merge two objects.
+ * 递归合并两个对象。
+ *
+ * @param source The source object to merge from. 要合并的源对象。
+ * @param target The target object to merge into. 目标对象，合并后结果存放于此。
+ * @param mergeArrays How to merge arrays. Default is "replace".
+ *        如何合并数组。默认为replace。
+ *        - "union": Union the arrays. 对数组执行并集操作。
+ *        - "intersection": Intersect the arrays. 对数组执行交集操作。
+ *        - "concat": Concatenate the arrays. 连接数组。
+ *        - "replace": Replace the source array with the target array. 用目标数组替换源数组。
+ * @returns The merged object. 合并后的对象。
+ */
+export function deepMerge<T extends object | null | undefined, U extends object | null | undefined>(
+  source: T,
+  target: U,
+  mergeArrays: 'union' | 'intersection' | 'concat' | 'replace' = 'replace',
+): T & U {
+  if (!target) {
+    return source as T & U;
   }
-  return res;
+  if (!source) {
+    return target as T & U;
+  }
+  if (isArray(target) && isArray(source)) {
+    switch (mergeArrays) {
+      case 'union':
+        return unionWith(target, source, isEqual) as T & U;
+      case 'intersection':
+        return intersectionWith(target, source, isEqual) as T & U;
+      case 'concat':
+        return target.concat(source) as T & U;
+      case 'replace':
+        return source as T & U;
+      default:
+        throw new Error(`Unknown merge array strategy: ${mergeArrays}`);
+
+    }
+  }
+  if (isObject(target) && isObject(source)) {
+    return mergeWith({}, target, source, (targetValue, sourceValue) => {
+      return deepMerge(targetValue, sourceValue, mergeArrays);
+    }) as T & U;
+  }
+  return source as T & U;
 }
 
 export function openWindow(
@@ -57,7 +95,7 @@ export function openWindow(
 }
 
 // dynamic use hook props
-export function getDynamicProps<T, U>(props: T): Partial<U> {
+export function getDynamicProps<T extends Record<string, unknown>, U>(props: T): Partial<U> {
   const ret: Recordable = {};
 
   Object.keys(props).map((key) => {
@@ -82,13 +120,29 @@ export function getRawRoute(route: RouteLocationNormalized): RouteLocationNormal
   };
 }
 
-export const withInstall = <T>(component: T, alias?: string) => {
-  const comp = component as any;
-  comp.install = (app: App) => {
-    app.component(comp.name || comp.displayName, component);
+// https://github.com/vant-ui/vant/issues/8302
+type EventShim = {
+  new (...args: any[]): {
+    $props: {
+      onClick?: (...args: any[]) => void;
+    };
+  };
+};
+
+export type WithInstall<T> = T & {
+  install(app: App): void;
+} & EventShim;
+
+export type CustomComponent = Component & { displayName?: string };
+
+export const withInstall = <T extends CustomComponent>(component: T, alias?: string) => {
+  (component as Record<string, unknown>).install = (app: App) => {
+    const compName = component.name || component.displayName;
+    if (!compName) return;
+    app.component(compName, component);
     if (alias) {
       app.config.globalProperties[alias] = component;
     }
   };
-  return component as T & Plugin;
+  return component as WithInstall<T>;
 };
